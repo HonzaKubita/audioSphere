@@ -33,6 +33,9 @@ function createFrequencyBuffer() {
 async function startAudio(file) {
   // load the audio file
   let audioElement = new Audio(file);
+  audioElement.controls = true;
+
+  document.getElementById("audioControls").appendChild(audioElement);
 
   // create a source node from the audio element
   let sourceNode = audioContext.createMediaElementSource(audioElement);

@@ -5,15 +5,21 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" type="text/css" href="/styles.css">
+  <link rel="icon" href="/favicon.png"/>
   <title>Audio Sphere</title>
 </head>
 <body>
   <div class="file-upload" id="upload" ondragover="event.preventDefault()">
-    <h1>Drop a music file here to begin or </h1>
-    <label class="custom-file-input">
-      <input type="file" id="file" />
-      <h1>select file</h1>
-    </label>
+    <h1>Drop a music file here to begin or
+      <label class="custom-file-input">
+        <input type="file" id="file" />
+        select file
+      </label>
+    </h1>
+  </div>
+
+  <div class="audio-controls" id="audioControls">
+   
   </div>
 
   <a href="https://github.com/HonzaKubita/audioSphere" target="_blank" class="github">

@@ -26,17 +26,22 @@ input[type="file"] {
 }
 
 .file-upload h1 {
+  max-width: 90%;
   color: #ffffff;
   font-family: Arial, Helvetica, sans-serif;
+  text-align: center;
 }
 
 .custom-file-input {
-  margin-left: 10px;
+  text-decoration: underline;
   cursor: pointer;
 }
 
-.custom-file-input h1 {
-  text-decoration: underline;
+.audio-controls {
+  position: fixed;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .github {
