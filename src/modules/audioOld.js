@@ -1,5 +1,5 @@
 // create a new audio context
-let audioContext = null;
+let audioContext = new AudioContext();
 let isAudioContextInitialized = false;
 
 function initAudioContext() {
@@ -30,7 +30,7 @@ function createFrequencyBuffer() {
 }
 
 // define a function to start playing the audio file
-async function startAudio(file) {
+async function startAudio() {
   // load the audio file
   let audioElement = new Audio(file);
   audioElement.controls = true;
@@ -56,7 +56,7 @@ async function startAudio(file) {
 // define a function to perform the FFT and update the frequency data
 export function audioUpdate() {
   analyserNode.getByteFrequencyData(frequencyData);
-  
+
   return frequencyData;
 }
 
