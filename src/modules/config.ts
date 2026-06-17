@@ -43,8 +43,7 @@ export const config = {
 
   sphere: {
     radius: 10,
-    widthSegments: 150,
-    heightSegments: 150,
+    ballCount: 22000, // total balls in the Fibonacci distribution (the resolution knob)
     ballDetail: 8, // poly count of each little ball (shared geometry, so cheap)
   },
 

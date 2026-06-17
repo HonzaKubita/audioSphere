@@ -26,21 +26,9 @@ export default class AudioSphere {
   private hueShift = 0;
 
   constructor() {
-    const { radius, widthSegments, heightSegments, ballDetail } = config.sphere;
+    const { radius, ballCount, ballDetail } = config.sphere;
     this.radius = radius;
-
-    // Reference sphere whose vertices position every ball.
-    const refGeo = new THREE.SphereGeometry(
-      radius,
-      widthSegments,
-      heightSegments,
-    );
-    const pos = refGeo.getAttribute("position");
-
-    // Skip the first row of vertices: they pile up on the pole and make an ugly
-    // cluster at the top.
-    const start = widthSegments;
-    this.count = pos.count - start;
+    this.count = Math.max(1, ballCount);
 
     this.dirs = new Float32Array(this.count * 3);
     this.binLo = new Int32Array(this.count);
@@ -48,8 +36,8 @@ export default class AudioSphere {
     this.binT = new Float32Array(this.count);
     this.hue = new Float32Array(this.count);
 
-    // Spread `binCount` bins across the whole sphere, independent of how many
-    // balls there are -> the segment counts act purely as resolution.
+    // Spread `binCount` bins across all the balls -> the ball count is purely
+    // resolution; the whole chosen spectrum is always mapped.
     const bins = config.audio.fftSize / 2;
     const binOffset = config.audio.binOffset;
     const binCount = Math.max(
@@ -58,19 +46,24 @@ export default class AudioSphere {
     );
     const denom = Math.max(1, this.count - 1);
 
-    for (let k = 0; k < this.count; k++) {
-      const vi = start + k;
-      _p.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
-      const len = _p.length() || 1;
-      this.dirs[k * 3] = _p.x / len;
-      this.dirs[k * 3 + 1] = _p.y / len;
-      this.dirs[k * 3 + 2] = _p.z / len;
+    // Golden-angle (Fibonacci) spiral: distributes the balls evenly over the
+    // sphere so every frequency gets the same density of balls -> no polar
+    // cramming, the highs keep their detail. Frequency runs along the spiral
+    // index, which still reads as a smooth spatial gradient because a point's
+    // nearest neighbours sit a Fibonacci number of steps away (a tiny bin gap).
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
-      // Normalised position along the spectral sweep (0 at the top pole, 1 at
-      // the bottom). The whole chosen spectrum maps across the sphere at any
-      // resolution. Each ball lands *between* two real bins and stores that pair
-      // plus a blend weight, so balls between two frequencies draw a smooth ramp
-      // from one gain to the next instead of a flat step of duplicated balls.
+    for (let k = 0; k < this.count; k++) {
+      // z marches from near +1 (top) to near -1 (bottom); r is the ring radius.
+      const z = 1 - (2 * k + 1) / this.count;
+      const r = Math.sqrt(Math.max(0, 1 - z * z));
+      const phi = k * goldenAngle;
+      this.dirs[k * 3] = Math.cos(phi) * r;
+      this.dirs[k * 3 + 1] = z;
+      this.dirs[k * 3 + 2] = Math.sin(phi) * r;
+
+      // Each ball lands *between* two real bins and stores that pair plus a
+      // blend weight, so the rendered surface ramps smoothly between gains.
       const frac = k / denom;
       const fpos = frac * (binCount - 1); // fractional bin position
       const i0 = Math.min(Math.floor(fpos), binCount - 1);
@@ -80,7 +73,6 @@ export default class AudioSphere {
       this.binT[k] = fpos - i0;
       this.hue[k] = frac; // 0..1 low -> high freq
     }
-    refGeo.dispose();
 
     // Unit ball, scaled per instance.
     const ballGeo = new THREE.SphereGeometry(0.4, ballDetail, ballDetail);
