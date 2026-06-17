@@ -1,91 +1,181 @@
 import * as THREE from "three";
+import { config } from "./config";
+import { analysis } from "./audioAnalysis";
+
+// Reused scratch objects so the per-frame loop allocates nothing.
+const _m = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _p = new THREE.Vector3();
+const _s = new THREE.Vector3();
+const _color = new THREE.Color();
 
 export default class AudioSphere {
-  // Class for generating spheres made out of balls and rendering it to the scene
-  meshes: THREE.Mesh[] = [];
-  radius: number;
-  widthSegments: number;
-  heightSegments: number;
-  refSphereGeometry: THREE.SphereGeometry;
-  refSphere: THREE.Mesh;
+  // Two instanced layers sharing one ball geometry:
+  //   baseMesh - the sphere of dots, driven by the blended level signal
+  //   satMesh  - satellites that spike outward from each dot on transients
+  baseMesh: THREE.InstancedMesh;
+  satMesh: THREE.InstancedMesh;
 
-  rotation: THREE.Euler;
-  scale: THREE.Vector3;
-  position: THREE.Vector3;
+  count: number;
+  private dirs: Float32Array; // unit radial direction per instance (3 floats each)
+  private binLo: Int32Array; // lower bin bracketing each instance
+  private binHi: Int32Array; // upper bin bracketing each instance
+  private binT: Float32Array; // 0..1 blend weight between binLo and binHi
+  private hue: Float32Array; // 0..1 base hue per instance (frequency mapped)
+  private radius: number;
+  private hueShift = 0;
 
-  constructor(radius: number, widthSegments: number, heightSegments: number) {
+  constructor() {
+    const { radius, widthSegments, heightSegments, ballDetail } = config.sphere;
     this.radius = radius;
-    this.widthSegments = widthSegments;
-    this.heightSegments = heightSegments;
 
-    this.refSphereGeometry = new THREE.SphereGeometry(
+    // Reference sphere whose vertices position every ball.
+    const refGeo = new THREE.SphereGeometry(
       radius,
       widthSegments,
       heightSegments,
-    ); // Reference geometry used to calculate positions of the balls once they have been moved and their initial positions was lost
-    this.refSphere = new THREE.Mesh(
-      this.refSphereGeometry,
-      new THREE.MeshBasicMaterial({ color: 0xffffff }),
     );
+    const pos = refGeo.getAttribute("position");
 
-    const positionAttributes = this.refSphereGeometry.getAttribute("position"); // Positions of vertices in the refSphere (used to calculate positions of the small balls)
+    // Skip the first row of vertices: they pile up on the pole and make an ugly
+    // cluster at the top.
+    const start = widthSegments;
+    this.count = pos.count - start;
 
-    // i starts at widthSegments so we don't have duplicate positions on the top as bunch of them are at the same position there
+    this.dirs = new Float32Array(this.count * 3);
+    this.binLo = new Int32Array(this.count);
+    this.binHi = new Int32Array(this.count);
+    this.binT = new Float32Array(this.count);
+    this.hue = new Float32Array(this.count);
 
-    // Generate the small balls on positions of the vertices of the refSphere (so we get a sphere made out of small balls)
-    for (let i = this.widthSegments; i < positionAttributes.count; i++) {
-      const sphereGeometry = new THREE.SphereGeometry(0.2, 7, 7); // Create geometry
-      const sphere = new THREE.Mesh(
-        sphereGeometry,
-        new THREE.MeshBasicMaterial({ color: 0xffffff }),
-      ); // Create mesh
+    // Spread `binCount` bins across the whole sphere, independent of how many
+    // balls there are -> the segment counts act purely as resolution.
+    const bins = config.audio.fftSize / 2;
+    const binOffset = config.audio.binOffset;
+    const binCount = Math.max(
+      1,
+      Math.min(config.audio.binCount, bins - binOffset),
+    );
+    const denom = Math.max(1, this.count - 1);
 
-      sphere.position.set(
-        positionAttributes.getX(i),
-        positionAttributes.getY(i),
-        positionAttributes.getZ(i),
-      ); // Set the position from refSphere
-      sphere.scale.set(0.1, 0.1, 0.1); // Set the scale (gets changed in the update)
-      this.meshes.push(sphere); // Add the ball to meshes
+    for (let k = 0; k < this.count; k++) {
+      const vi = start + k;
+      _p.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+      const len = _p.length() || 1;
+      this.dirs[k * 3] = _p.x / len;
+      this.dirs[k * 3 + 1] = _p.y / len;
+      this.dirs[k * 3 + 2] = _p.z / len;
+
+      // Normalised position along the spectral sweep (0 at the top pole, 1 at
+      // the bottom). The whole chosen spectrum maps across the sphere at any
+      // resolution. Each ball lands *between* two real bins and stores that pair
+      // plus a blend weight, so balls between two frequencies draw a smooth ramp
+      // from one gain to the next instead of a flat step of duplicated balls.
+      const frac = k / denom;
+      const fpos = frac * (binCount - 1); // fractional bin position
+      const i0 = Math.min(Math.floor(fpos), binCount - 1);
+      const i1 = Math.min(i0 + 1, binCount - 1);
+      this.binLo[k] = binOffset + i0;
+      this.binHi[k] = binOffset + i1;
+      this.binT[k] = fpos - i0;
+      this.hue[k] = frac; // 0..1 low -> high freq
     }
+    refGeo.dispose();
 
-    // Some unused stuff :/
-    this.rotation = this.refSphere.rotation;
-    this.scale = this.refSphere.scale;
-    this.position = this.refSphere.position;
+    // Unit ball, scaled per instance.
+    const ballGeo = new THREE.SphereGeometry(0.4, ballDetail, ballDetail);
+    const satGeo = new THREE.SphereGeometry(0.2, ballDetail, ballDetail);
+
+    const baseMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+    // Satellites are pure light: additive so overlaps brighten and feed the bloom.
+    const satMat = new THREE.MeshBasicMaterial({
+      toneMapped: false,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+    });
+
+    this.baseMesh = new THREE.InstancedMesh(ballGeo, baseMat, this.count);
+    this.satMesh = new THREE.InstancedMesh(satGeo, satMat, this.count);
+    this.baseMesh.frustumCulled = false;
+    this.satMesh.frustumCulled = false;
+
+    // Touch every instance once so the matrix/color buffers are allocated.
+    for (let k = 0; k < this.count; k++) {
+      this.baseMesh.setColorAt(k, _color.setRGB(0, 0, 0));
+      this.satMesh.setColorAt(k, _color.setRGB(0, 0, 0));
+    }
   }
 
   addToScene(scene: THREE.Scene) {
-    this.meshes.forEach((mesh) => scene.add(mesh)); // Add each ball to the scene
+    scene.add(this.baseMesh, this.satMesh);
   }
 
-  update(freqData: Uint8Array) {
-    // Update positions of all meshes
-    const positionAttributes = this.refSphereGeometry.getAttribute("position"); // Get the positions of reference spheres
-    let freqIndex = 0;
-    for (let i = this.widthSegments; i < this.meshes.length; i++) {
-      const freqDataFreq = freqData[freqIndex + 20]; // I have to skip first 20 frequencies as many songs are reaching the ceiling there and that makes ugly row of balls on the top
+  update(dt: number) {
+    const cb = config.baseBall;
+    const cs = config.satellite;
+    const cc = config.color;
 
-      const sphere = this.meshes[i - this.widthSegments]; // Get the THREE ball we want to move
-      const newPosition = new THREE.Vector3(
-        positionAttributes.getX(i),
-        positionAttributes.getY(i),
-        positionAttributes.getZ(i),
+    this.hueShift = (this.hueShift + cc.hueDrift * dt) % 1;
+
+    for (let k = 0; k < this.count; k++) {
+      // Interpolate each signal between the two bins this ball sits between.
+      const lo = this.binLo[k];
+      const hi = this.binHi[k];
+      const t = this.binT[k];
+      const level =
+        analysis.level[lo] + (analysis.level[hi] - analysis.level[lo]) * t;
+      const off =
+        analysis.offset[lo] + (analysis.offset[hi] - analysis.offset[lo]) * t;
+      const flash =
+        analysis.flash[lo] + (analysis.flash[hi] - analysis.flash[lo]) * t;
+
+      const dx = this.dirs[k * 3];
+      const dy = this.dirs[k * 3 + 1];
+      const dz = this.dirs[k * 3 + 2];
+
+      let h = cc.hueStart - this.hue[k] * cc.hueRange + this.hueShift;
+      h -= Math.floor(h); // wrap into 0..1
+
+      // --- base ball: sits on the (expanded) sphere surface ---
+      const baseR = this.radius * (1 + level * cb.move);
+      const bx = dx * baseR;
+      const by = dy * baseR;
+      const bz = dz * baseR;
+      const baseSize = cb.minSize + level * cb.sizeGain;
+
+      _p.set(bx, by, bz);
+      _s.set(baseSize, baseSize, baseSize);
+      _m.compose(_p, _q, _s);
+      this.baseMesh.setMatrixAt(k, _m);
+
+      _color.setHSL(h, cb.saturation, cb.minLight + level * cb.lightGain);
+      this.baseMesh.setColorAt(k, _color);
+
+      // --- satellite: starts at the base ball, spikes further outward ---
+      const offW = off * cs.offsetScale;
+      const satSize =
+        cs.minSize + off * cs.offsetSizeGain + flash * cs.flashSizeGain;
+
+      _p.set(bx + dx * offW, by + dy * offW, bz + dz * offW);
+      _s.set(satSize, satSize, satSize);
+      _m.compose(_p, _q, _s);
+      this.satMesh.setMatrixAt(k, _m);
+
+      const satLight = Math.min(
+        1,
+        cs.minLight + off * cs.lightGain + flash * cs.flashLight,
       );
-
-      // Calculate new position based on frequency data
-      const audioMove = freqDataFreq ** 3 / 10000000;
-      newPosition.multiplyScalar(audioMove + 1);
-      sphere.position.set(newPosition.x, newPosition.y, newPosition.z);
-
-      // Calculate the size
-      const audioSize = freqDataFreq / 100 + 0.1;
-      sphere.scale.set(audioSize, audioSize, audioSize);
-
-      if (i % 2 == 0) {
-        // Increase the frequency index by one every second iteration so we can have more balls :D
-        freqIndex++;
-      }
+      const satSat = Math.max(0, cs.saturation - flash * cs.flashDesat);
+      _color.setHSL(h, satSat, satLight);
+      this.satMesh.setColorAt(k, _color);
     }
+
+    this.baseMesh.instanceMatrix.needsUpdate = true;
+    this.satMesh.instanceMatrix.needsUpdate = true;
+    if (this.baseMesh.instanceColor)
+      this.baseMesh.instanceColor.needsUpdate = true;
+    if (this.satMesh.instanceColor)
+      this.satMesh.instanceColor.needsUpdate = true;
   }
 }

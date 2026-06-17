@@ -1,7 +1,12 @@
+import { config } from "./config";
+
 const audioContext = new AudioContext();
 
 const analyserNode = audioContext.createAnalyser();
-analyserNode.fftSize = 2048;
+analyserNode.fftSize = config.audio.fftSize;
+// Lower built-in smoothing so onsets stay sharp; our own analysis does the
+// perceptual smoothing per bin.
+analyserNode.smoothingTimeConstant = config.audio.smoothing;
 
 const freqDataBufferLength = analyserNode.frequencyBinCount;
 export const freqDataBuffer = new Uint8Array(freqDataBufferLength);
